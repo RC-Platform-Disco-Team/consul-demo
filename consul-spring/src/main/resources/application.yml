@@ -1,0 +1,17 @@
+server:
+  port: 8080
+
+spring:
+  cloud:
+    consul:
+      host: localhost
+      port: 8500
+      discovery:
+        healthCheckPath: /consul/health
+        healthCheckInterval: 15s
+  application:
+    name: disco-consul-cloud
+
+logging:
+  level:
+    org.springframework.cloud.consul: DEBUG
