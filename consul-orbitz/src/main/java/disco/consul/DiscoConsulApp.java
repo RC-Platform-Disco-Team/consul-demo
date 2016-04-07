@@ -72,9 +72,12 @@ public class DiscoConsulApp {
         svHealth.addListener(newValues -> {
             for (ServiceHealth serviceHealth : newValues.values()) {
                 for (HealthCheck healthCheck : serviceHealth.getChecks()) {
-                    if ("failed".equals(healthCheck.getStatus())) {
+                    if ("critical".equals(healthCheck.getStatus())) {
                         try {
-                            chooseLeader();
+                            // TODO: retry if release failed
+                            if (leUtil.releaseLockForService(serviceName)) {
+                                chooseLeader();
+                            }
                         } catch (Exception ignored) {
                             ignored.printStackTrace();
                         }
@@ -89,7 +92,7 @@ public class DiscoConsulApp {
         return Response.ok().build();
     }
 
-    @RequestMapping("/leader")
+    @RequestMapping("/electLeader")
     public @ResponseBody String chooseLeader() throws Exception {
         for (int i = 0; i < RETRY_NUM; i++) {
             Optional<String> result = leUtil.electNewLeaderForService(serviceName, SERVICE_INFO);
@@ -104,6 +107,16 @@ public class DiscoConsulApp {
             }
         }
         throw new IllegalStateException("Leader election failed. Please check the consul agent.");
+    }
+
+    @RequestMapping("/releaseLock")
+    public @ResponseBody boolean releaseLock() {
+        return leUtil.releaseLockForService(serviceName);
+    }
+
+    @RequestMapping("/leader")
+    public @ResponseBody String getLeader() {
+        return leUtil.getLeaderInfoForService(serviceName).get();
     }
 
     @RequestMapping("/sessions")
