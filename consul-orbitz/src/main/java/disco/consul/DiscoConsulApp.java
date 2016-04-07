@@ -1,21 +1,23 @@
 package disco.consul;
 
 import java.math.BigInteger;
-import java.net.MalformedURLException;
 import java.net.URL;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.annotation.PostConstruct;
 import javax.ws.rs.core.Response;
 
 import com.google.common.base.Optional;
-import com.google.common.io.BaseEncoding;
 import com.orbitz.consul.AgentClient;
 import com.orbitz.consul.Consul;
 import com.orbitz.consul.HealthClient;
 import com.orbitz.consul.KeyValueClient;
 import com.orbitz.consul.SessionClient;
 import com.orbitz.consul.async.ConsulResponseCallback;
+import com.orbitz.consul.cache.ServiceHealthCache;
 import com.orbitz.consul.model.ConsulResponse;
+import com.orbitz.consul.model.State;
+import com.orbitz.consul.model.health.HealthCheck;
+import com.orbitz.consul.model.health.ServiceHealth;
 import com.orbitz.consul.model.kv.Value;
 import com.orbitz.consul.model.session.ImmutableSession;
 import com.orbitz.consul.model.session.Session;
@@ -36,10 +38,8 @@ import org.springframework.web.bind.annotation.ResponseBody;
 @RequestMapping("/proxy")
 public class DiscoConsulApp {
 
-    private static final int RETRY_NUM = 3;
-    private static final long PAUSE_BETWEEN_RETRY_MILLIS = 1000;
     private static final Logger LOGGER = LoggerFactory.getLogger(DiscoConsulApp.class);
-
+    private static boolean tryElectLeader = true;
 
     @org.springframework.beans.factory.annotation.Value("${service.name}")
     private String serviceName;
@@ -56,18 +56,33 @@ public class DiscoConsulApp {
     @org.springframework.beans.factory.annotation.Value("${service.healthCheck.address}")
     private String serviceHealthCheckAddress;
 
+    @org.springframework.beans.factory.annotation.Value("${leader.election.url}")
+    private String leaderLockUrl;
+
+    @org.springframework.beans.factory.annotation.Value("${leader.election.retry_number}")
+    private int retryNumber;
+
+    @org.springframework.beans.factory.annotation.Value("${leader.election.initial_time_interval_between_retry_millis}")
+    private int retryInterval;
+
+    @org.springframework.beans.factory.annotation.Value("${service.healthCheck.interval_seconds}")
+    private long healthCheckIntervalSeconds;
+
+    @org.springframework.beans.factory.annotation.Value("${leader.election.lock_acquire_block_minutes}")
+    private int lockAcquireBlockMinutes;
+
     Consul consul;
     AgentClient agentClient;
     KeyValueClient keyValueClient;
     SessionClient sessionClient;
     HealthClient healthClient;
     LeaderElectionUtil leUtil;
+    ServiceHealthCache svHealth;
 
     public DiscoConsulApp() {
         // connect to Consul on localhost:8500
         consul = Consul.builder().build();
 
-        // build clients
         this.agentClient = consul.agentClient();
         this.leUtil = new LeaderElectionUtil(consul);
         this.keyValueClient = consul.keyValueClient();
@@ -76,10 +91,30 @@ public class DiscoConsulApp {
     }
 
     @PostConstruct
-    public void init() throws MalformedURLException {
-        agentClient.register(port, new URL(serviceHealthCheckAddress), 10L, serviceName, serviceId);
-        chooseLeader();
-        subscribeToLeaderChange();
+    public void init() throws Exception {
+        agentClient.register(port, new URL(serviceHealthCheckAddress), healthCheckIntervalSeconds, serviceName, serviceId);
+        svHealth = ServiceHealthCache.newCache(healthClient, serviceName);
+        addHealthCheckListener();
+        svHealth.start();
+    }
+
+    private void addHealthCheckListener() {
+        svHealth.addListener(newValues -> {
+            boolean healthy = true;
+
+            for (ServiceHealth serviceHealth : newValues.values()) {
+                for (HealthCheck healthCheck : serviceHealth.getChecks()) {
+                    if (State.FAIL.getName().equals(healthCheck.getStatus())) {
+                        healthy = false;
+                    }
+                }
+            }
+            if (healthy && tryElectLeader) {
+                chooseLeader();
+                subscribeToLeaderChange();
+                tryElectLeader = false;
+            }
+        });
     }
 
     private void subscribeToLeaderChange() {
@@ -91,7 +126,6 @@ public class DiscoConsulApp {
                 Optional<Value> response = consulResponse.getResponse();
                 if (!response.isPresent() ||
                         response.isPresent() && !response.get().getSession().isPresent()) {
-                    LOGGER.info("leader was overthrown: " + new String(BaseEncoding.base64().decode(response.get().getValue().get())));
                     releaseLock();
                     chooseLeader();
                 }
@@ -100,16 +134,18 @@ public class DiscoConsulApp {
             }
 
             void watch() {
-                keyValueClient.getValue("service/disco-consul-service/leader", QueryOptions.blockSeconds(30, index.get()).build(), this);
+                keyValueClient.getValue(leaderLockUrl,
+                        QueryOptions.blockMinutes(lockAcquireBlockMinutes, index.get()).build(), this);
             }
 
             @Override
             public void onFailure(Throwable throwable) {
-                throwable.printStackTrace();
+                LOGGER.info("leader change subscription failed", throwable);
                 watch();
             }
         };
-        keyValueClient.getValue("service/disco-consul-service/leader", QueryOptions.blockSeconds(30, new BigInteger("0")).build(), callback);
+        keyValueClient.getValue(leaderLockUrl,
+                QueryOptions.blockMinutes(lockAcquireBlockMinutes, new BigInteger("0")).build(), callback);
     }
 
     @RequestMapping("/health")
@@ -119,15 +155,15 @@ public class DiscoConsulApp {
 
     @RequestMapping("/electLeader")
     public @ResponseBody String chooseLeader() {
-        for (int i = 0; i < RETRY_NUM; i++) {
+        for (int i = 0; i < retryNumber; i++) {
             Optional<String> result = electNewLeaderForService(serviceName, serviceInfo);
             if (result.isPresent()) {
                 return result.get();
             } else {
                 try {
-                    Thread.sleep((long) (PAUSE_BETWEEN_RETRY_MILLIS * Math.pow(2, i)));
+                    Thread.sleep((long) (retryInterval * Math.pow(2, i)));
                 } catch (InterruptedException ignored) {
-                    ignored.printStackTrace();
+                    LOGGER.info("Pause between leader election was interrupted", ignored);
                 }
             }
         }
@@ -156,7 +192,11 @@ public class DiscoConsulApp {
     }
 
     private String createSession(String serviceName) {
-        final Session session = ImmutableSession.builder().name(serviceName).behavior("delete").build();
+        final Session session = ImmutableSession.builder()
+                .name(serviceName)
+                .behavior("delete")
+                .addChecks("serfHealth", "service:" + serviceId)
+                .build();
         return sessionClient.createSession(session).getId();
     }
 
@@ -183,6 +223,4 @@ public class DiscoConsulApp {
     public @ResponseBody String getHealthyServiceInstances() {
         return healthClient.getHealthyServiceInstances(serviceName).getResponse().toString();
     }
-
-
 }

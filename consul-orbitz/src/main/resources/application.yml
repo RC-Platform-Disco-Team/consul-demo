@@ -1,14 +1,22 @@
 server:
-  port: 9000
+  port: 9001
 
 management:
-  port: 11111
+  port: 11112
   address: 127.0.0.1
 
 service:
   name: disco-consul-service
-  id: ${service.name}id-01
+  id: ${service.name}id-02
   address: ${management.address}
   info: '{"name":"${service.name}","address":"${service.address}:${server.port}"'
   healthCheck:
     address: http://${service.address}:${server.port}/proxy/health
+    interval_seconds: 10
+
+leader:
+  election:
+    url: service/${service.name}/leader
+    retry_number: 3
+    initial_time_interval_between_retry_millis: 1000
+    lock_acquire_block_minutes: 2
