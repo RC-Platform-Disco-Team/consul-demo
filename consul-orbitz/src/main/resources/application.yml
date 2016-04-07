@@ -1,0 +1,14 @@
+server:
+  port: 9000
+
+management:
+  port: 11111
+  address: 127.0.0.1
+
+service:
+  name: disco-consul-service
+  id: ${service.name}id-01
+  address: ${management.address}
+  info: '{"name":"${service.name}","address":"${service.address}:${server.port}"'
+  healthCheck:
+    address: http://${service.address}:${server.port}/proxy/health
