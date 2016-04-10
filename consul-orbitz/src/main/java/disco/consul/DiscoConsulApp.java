@@ -78,13 +78,13 @@ public class DiscoConsulApp {
     @org.springframework.beans.factory.annotation.Value("${consul.agent.port}")
     private int consulAgentPort;
 
-    Consul consul;
-    AgentClient agentClient;
-    KeyValueClient keyValueClient;
-    SessionClient sessionClient;
-    HealthClient healthClient;
-    LeaderElectionUtil leUtil;
-    ServiceHealthCache svHealth;
+    private Consul consul;
+    private AgentClient agentClient;
+    private KeyValueClient keyValueClient;
+    private SessionClient sessionClient;
+    private HealthClient healthClient;
+    private LeaderElectionUtil leUtil;
+    private ServiceHealthCache svHealth;
 
     @PostConstruct
     public void init() throws Exception {
