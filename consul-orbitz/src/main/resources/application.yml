@@ -20,3 +20,8 @@ leader:
     retry_number: 3
     initial_time_interval_between_retry_millis: 1000
     lock_acquire_block_minutes: 2
+
+consul:
+  agent:
+    host: 127.0.0.1
+    port: 8500

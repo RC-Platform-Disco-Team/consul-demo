@@ -7,6 +7,7 @@ import javax.annotation.PostConstruct;
 import javax.ws.rs.core.Response;
 
 import com.google.common.base.Optional;
+import com.google.common.net.HostAndPort;
 import com.orbitz.consul.AgentClient;
 import com.orbitz.consul.Consul;
 import com.orbitz.consul.HealthClient;
@@ -71,6 +72,12 @@ public class DiscoConsulApp {
     @org.springframework.beans.factory.annotation.Value("${leader.election.lock_acquire_block_minutes}")
     private int lockAcquireBlockMinutes;
 
+    @org.springframework.beans.factory.annotation.Value("${consul.agent.host}")
+    private String consulAgentHost;
+
+    @org.springframework.beans.factory.annotation.Value("${consul.agent.port}")
+    private int consulAgentPort;
+
     Consul consul;
     AgentClient agentClient;
     KeyValueClient keyValueClient;
@@ -79,19 +86,17 @@ public class DiscoConsulApp {
     LeaderElectionUtil leUtil;
     ServiceHealthCache svHealth;
 
-    public DiscoConsulApp() {
-        // connect to Consul on localhost:8500
-        consul = Consul.builder().build();
+    @PostConstruct
+    public void init() throws Exception {
+        HostAndPort agentAddress = HostAndPort.fromParts(consulAgentHost, consulAgentPort);
+        consul = Consul.builder().withHostAndPort(agentAddress).build();
 
         this.agentClient = consul.agentClient();
         this.leUtil = new LeaderElectionUtil(consul);
         this.keyValueClient = consul.keyValueClient();
         this.sessionClient = consul.sessionClient();
         this.healthClient = consul.healthClient();
-    }
 
-    @PostConstruct
-    public void init() throws Exception {
         agentClient.register(port, new URL(serviceHealthCheckAddress), healthCheckIntervalSeconds, serviceName, serviceId);
         svHealth = ServiceHealthCache.newCache(healthClient, serviceName);
         addHealthCheckListener();
